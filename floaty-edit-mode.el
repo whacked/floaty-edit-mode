@@ -10,8 +10,13 @@
   "Floating window editing using child frames."
   :group 'editing)
 
-(defcustom floaty-edit-directive-regexp "^\\(?:;;;\\|<!--\\) +[fF]@\\([0-9]+\\)x\\([0-9]+\\)\\(?:\\+\\([0-9]+\\)\\)?\\(?:\\+\\([0-9]+\\)\\)? *\\(?:-->\\|*/\\)?$"
-  "Regular expression to match floaty edit directives."
+(defcustom floaty-edit-open-directive-regexp "^\\(?:##\\|;;;\\|<!--\\) *f@\\([0-9]+\\)x\\([0-9]+\\)\\(?:\\+\\([0-9]+\\)\\)?\\(?:\\+\\([0-9]+\\)\\)? *\\(?:-->\\|*/\\)?$"
+  "Regular expression to match floaty edit opening directives."
+  :type 'regexp
+  :group 'floaty-edit)
+
+(defcustom floaty-edit-end-directive-regexp "^\\(?:##\\|;;;\\|<!--\\) *f@end *\\(?:-->\\|*/\\)?$"
+  "Regular expression to match floaty edit end directives."
   :type 'regexp
   :group 'floaty-edit)
 
@@ -47,41 +52,58 @@
 
 (defun floaty-edit-parse-buffer ()
   "Parse the host buffer for floaty edit directives."
-  (with-current-buffer floaty-edit-host-buffer
+  (with-current-buffer (or floaty-edit-host-buffer (current-buffer))
     (save-excursion
       (goto-char (point-min))
       (let ((directives '())
             (line 1)
-            (total-height 0))
-        (while (re-search-forward floaty-edit-directive-regexp nil t)
-          (let* ((start (line-beginning-position))
-                 (width (string-to-number (match-string 1)))
-                 (height (string-to-number (match-string 2)))
-                 (x (if (match-string 3)
-                        (string-to-number (match-string 3))
-                      floaty-edit-default-x-offset))
-                 (y (if (match-string 4)
-                        (string-to-number (match-string 4))
-                      total-height))
-                 (directive (make-floaty-edit-directive
-                             :line line
-                             :width width
-                             :height height
-                             :x x
-                             :y y
-                             :start start
-                             :end nil
-                             :frame nil)))
-            (push directive directives)
-            (setq total-height (+ y height 1)))
-          (setq line (1+ line)))
-        (setq directives (nreverse directives))
-        ;; Set end positions
-        (let ((last-end (point-max)))
-          (dolist (dir (reverse directives))
-            (setf (floaty-edit-directive-end dir) last-end)
-            (setq last-end (floaty-edit-directive-start dir))))
-        directives))))
+            (total-height 0)
+            (current-directive nil)
+            (buffer-end (point-max)))
+        (while (< (point) buffer-end)
+          (let ((line-start (point))
+                (line-end (line-end-position)))
+            (cond
+             ;; Check for opening directive
+             ((string-match floaty-edit-open-directive-regexp 
+                            (buffer-substring-no-properties line-start line-end))
+              (when current-directive
+                (setf (floaty-edit-directive-end current-directive) line-start))
+              (let* ((width (string-to-number (match-string 1 (buffer-substring-no-properties line-start line-end))))
+                     (height (string-to-number (match-string 2 (buffer-substring-no-properties line-start line-end))))
+                     (x (if (match-string 3 (buffer-substring-no-properties line-start line-end))
+                            (string-to-number (match-string 3 (buffer-substring-no-properties line-start line-end)))
+                          floaty-edit-default-x-offset))
+                     (y (if (match-string 4 (buffer-substring-no-properties line-start line-end))
+                            (string-to-number (match-string 4 (buffer-substring-no-properties line-start line-end)))
+                          total-height)))
+                (setq current-directive (make-floaty-edit-directive
+                                         :line line
+                                         :width width
+                                         :height height
+                                         :x x
+                                         :y y
+                                         :start line-start
+                                         :end nil
+                                         :frame nil))
+                (push current-directive directives)
+                (setq total-height (+ y height 1))))
+             
+             ;; Check for ending directive
+             ((string-match floaty-edit-end-directive-regexp
+                            (buffer-substring-no-properties line-start line-end))
+              (when current-directive
+                (setf (floaty-edit-directive-end current-directive) line-start)
+                (setq current-directive nil))))
+            
+            (forward-line 1)
+            (setq line (1+ line))))
+        
+        ;; Handle case where last directive extends to end of buffer
+        (when current-directive
+          (setf (floaty-edit-directive-end current-directive) buffer-end))
+        
+        (nreverse directives)))))
 
 (defun floaty-edit-create-child-frame (directive)
   "Create a child frame for the given DIRECTIVE."
@@ -114,8 +136,9 @@
       (narrow-to-region (floaty-edit-directive-start directive) (floaty-edit-directive-end directive))
       (goto-char (point-min))
       ;; Add mouse event handlers to the child frame
-      (define-key special-event-map [down-mouse-1] 'floaty-edit-mouse-down)
-      (define-key special-event-map [mouse-1] 'floaty-edit-mouse-up))
+      ;; (define-key special-event-map [down-mouse-1] 'floaty-edit-mouse-down)
+      ;; (define-key special-event-map [mouse-1] 'floaty-edit-mouse-up)
+      )
     (setf (floaty-edit-directive-frame directive) child-frame)
     child-frame))
 
@@ -180,13 +203,12 @@
               (setf (floaty-edit-directive-x directive) new-x
                     (floaty-edit-directive-y directive) new-y))))))))
 
-
 (defun floaty-edit-fold-all ()
   "Fold all floaty-edit sections in the buffer."
   (interactive)
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward floaty-edit-directive-regexp nil t)
+    (while (re-search-forward floaty-edit-open-directive-regexp nil t)
       (outline-hide-entry))))
 
 (defun floaty-edit-unfold-all ()
@@ -194,7 +216,7 @@
   (interactive)
   (save-excursion
     (goto-char (point-min))
-    (while (re-search-forward floaty-edit-directive-regexp nil t)
+    (while (re-search-forward floaty-edit-open-directive-regexp nil t)
       (outline-show-entry))))
 
 (defun floaty-edit-toggle-fold ()
@@ -206,61 +228,60 @@
         (outline-show-entry)
       (outline-hide-entry))))
 
-
-(defvar floaty-edit-dragging nil
-  "The frame currently being dragged, or nil if no dragging is in progress.")
-
-(defvar floaty-edit-drag-start nil
-  "The starting position of the mouse when dragging began.")
-
-(defun floaty-edit-mouse-down (event)
-  "Handle mouse down event to start dragging a child frame."
-  (interactive "e")
-  (message "MOUSE DOWN!")
-  (let* ((mouse-pos (event-start event))
-         (frame (window-frame (posn-window mouse-pos))))
-    (message "CURRENT FRAME: %s" frame)
-    (message "floaty frames: %s" floaty-edit-frames)
-    (when (member frame floaty-edit-frames)
-      (setq floaty-edit-drag-start (cons frame (mouse-pixel-position))))))
-
-(defun floaty-edit-mouse-dragging (event)
-  "Handle mouse dragging event to move a child frame."
-  (interactive "e") ;; Ensure it's interactive
-  (message "delete me %s" floaty-edit-drag-start)
-  (when floaty-edit-drag-start
-    (message "DRAG START %s" 1)
-    (let* ((start-frame (car floaty-edit-drag-start))
-           (start-pos (cdr floaty-edit-drag-start))
-           (end-pos (mouse-pixel-position))
-           (dx (- (cadr end-pos) (cadr start-pos)))
-           (dy (- (cddr end-pos) (cddr start-pos)))
-           (frame-pos (frame-position start-frame))
-           (new-x (+ (car frame-pos) dx))
-           (new-y (+ (cdr frame-pos) dy)))
-      (set-frame-position start-frame new-x new-y)
-      (floaty-edit-update-directive start-frame 
-                                    (floor new-x (frame-char-width))
-                                    (floor new-y (frame-char-height))))
-    (setq floaty-edit-drag-start nil)))
-
-(defun floaty-edit-mouse-up (event)
-  "Handle mouse up event to reposition a child frame."
-  (interactive "e")
-  (when floaty-edit-drag-start
-    (let* ((start-frame (car floaty-edit-drag-start))
-           (start-pos (cdr floaty-edit-drag-start))
-           (end-pos (mouse-pixel-position))
-           (dx (- (cadr end-pos) (cadr start-pos)))
-           (dy (- (cddr end-pos) (cddr start-pos)))
-           (frame-pos (frame-position start-frame))
-           (new-x (+ (car frame-pos) dx))
-           (new-y (+ (cdr frame-pos) dy)))
-      (set-frame-position start-frame new-x new-y)
-      (floaty-edit-update-directive start-frame 
-                                    (floor new-x (frame-char-width))
-                                    (floor new-y (frame-char-height))))
-    (setq floaty-edit-drag-start nil)))
+;; (defvar floaty-edit-dragging nil
+;;   "The frame currently being dragged, or nil if no dragging is in progress.")
+;; 
+;; (defvar floaty-edit-drag-start nil
+;;   "The starting position of the mouse when dragging began.")
+;; 
+;; (defun floaty-edit-mouse-down (event)
+;;   "Handle mouse down event to start dragging a child frame."
+;;   (interactive "e")
+;;   (message "MOUSE DOWN!")
+;;   (let* ((mouse-pos (event-start event))
+;;          (frame (window-frame (posn-window mouse-pos))))
+;;     (message "CURRENT FRAME: %s" frame)
+;;     (message "floaty frames: %s" floaty-edit-frames)
+;;     (when (member frame floaty-edit-frames)
+;;       (setq floaty-edit-drag-start (cons frame (mouse-pixel-position))))))
+;; 
+;; (defun floaty-edit-mouse-dragging (event)
+;;   "Handle mouse dragging event to move a child frame."
+;;   (interactive "e") ;; Ensure it's interactive
+;;   (message "delete me %s" floaty-edit-drag-start)
+;;   (when floaty-edit-drag-start
+;;     (message "DRAG START %s" 1)
+;;     (let* ((start-frame (car floaty-edit-drag-start))
+;;            (start-pos (cdr floaty-edit-drag-start))
+;;            (end-pos (mouse-pixel-position))
+;;            (dx (- (cadr end-pos) (cadr start-pos)))
+;;            (dy (- (cddr end-pos) (cddr start-pos)))
+;;            (frame-pos (frame-position start-frame))
+;;            (new-x (+ (car frame-pos) dx))
+;;            (new-y (+ (cdr frame-pos) dy)))
+;;       (set-frame-position start-frame new-x new-y)
+;;       (floaty-edit-update-directive start-frame 
+;;                                     (floor new-x (frame-char-width))
+;;                                     (floor new-y (frame-char-height))))
+;;     (setq floaty-edit-drag-start nil)))
+;; 
+;; (defun floaty-edit-mouse-up (event)
+;;   "Handle mouse up event to reposition a child frame."
+;;   (interactive "e")
+;;   (when floaty-edit-drag-start
+;;     (let* ((start-frame (car floaty-edit-drag-start))
+;;            (start-pos (cdr floaty-edit-drag-start))
+;;            (end-pos (mouse-pixel-position))
+;;            (dx (- (cadr end-pos) (cadr start-pos)))
+;;            (dy (- (cddr end-pos) (cddr start-pos)))
+;;            (frame-pos (frame-position start-frame))
+;;            (new-x (+ (car frame-pos) dx))
+;;            (new-y (+ (cdr frame-pos) dy)))
+;;       (set-frame-position start-frame new-x new-y)
+;;       (floaty-edit-update-directive start-frame 
+;;                                     (floor new-x (frame-char-width))
+;;                                     (floor new-y (frame-char-height))))
+;;     (setq floaty-edit-drag-start nil)))
 
 (defun floaty-edit-child-mode ()
   "Minor mode for child frames in floaty-edit."
