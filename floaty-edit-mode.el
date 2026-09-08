@@ -20,8 +20,8 @@
   :type 'regexp
   :group 'floaty-edit)
 
-(defcustom floaty-edit-default-x-offset 80
-  "Default x-offset for child frames when not specified in the directive."
+(defcustom floaty-edit-default-x-offset-ratio 0.5
+  "Default x-offset ratio in terms of screen width for child frames when not specified in the directive."
   :type 'integer
   :group 'floaty-edit)
 
@@ -73,7 +73,7 @@
                      (height (string-to-number (match-string 2 (buffer-substring-no-properties line-start line-end))))
                      (x (if (match-string 3 (buffer-substring-no-properties line-start line-end))
                             (string-to-number (match-string 3 (buffer-substring-no-properties line-start line-end)))
-                          floaty-edit-default-x-offset))
+                          (round (* (frame-width floaty-edit-host-frame) floaty-edit-default-x-offset-ratio))))
                      (y (if (match-string 4 (buffer-substring-no-properties line-start line-end))
                             (string-to-number (match-string 4 (buffer-substring-no-properties line-start line-end)))
                           total-height)))
@@ -196,12 +196,21 @@
                                    floaty-edit-directive-cache)))
         (when directive
           (goto-char (floaty-edit-directive-start directive))
-          (when (looking-at floaty-edit-directive-regexp)
+          (when (looking-at floaty-edit-open-directive-regexp)
             (let ((width (floaty-edit-directive-width directive))
                   (height (floaty-edit-directive-height directive)))
               (replace-match (format ";; @%dx%d+%d+%d" width height new-x new-y))
               (setf (floaty-edit-directive-x directive) new-x
                     (floaty-edit-directive-y directive) new-y))))))))
+
+;; (comment
+;;  (defun floaty-edit-fold-all ()
+;;    "Fold all floaty-edit sections in the buffer."
+;;    (interactive)
+;;    (save-excursion
+;;      (goto-char (point-min))
+;;      (while (re-search-forward floaty-edit-open-directive-regexp nil t)
+;;        (outline-hide-entry)))))
 
 (defun floaty-edit-fold-all ()
   "Fold all floaty-edit sections in the buffer."
@@ -209,7 +218,12 @@
   (save-excursion
     (goto-char (point-min))
     (while (re-search-forward floaty-edit-open-directive-regexp nil t)
-      (outline-hide-entry))))
+      (let ((start (point))
+            (end (save-excursion
+                   (if (re-search-forward floaty-edit-end-directive-regexp nil t)
+                       (match-beginning 0)
+                     (point-max)))))
+        (outline-flag-region start end t)))))
 
 (defun floaty-edit-unfold-all ()
   "Unfold all floaty-edit sections in the buffer."
@@ -224,9 +238,14 @@
   (interactive)
   (save-excursion
     (end-of-line)
-    (if (outline-invisible-p)
-        (outline-show-entry)
-      (outline-hide-entry))))
+    (let* ((start (point))
+           (end (save-excursion
+                  (if (re-search-forward floaty-edit-end-directive-regexp nil t)
+                      (match-beginning 0)
+                    (point-max)))))
+      (if (get-char-property start 'invisible)
+          (outline-flag-region start end nil)
+        (outline-flag-region start end t)))))
 
 ;; (defvar floaty-edit-dragging nil
 ;;   "The frame currently being dragged, or nil if no dragging is in progress.")
@@ -304,10 +323,11 @@
       (progn
         (setq floaty-edit-host-buffer (current-buffer)
               floaty-edit-host-frame (selected-frame))
-        (font-lock-add-keywords nil `((,floaty-edit-directive-regexp 0 'floaty-edit-directive-face prepend)))
+        (font-lock-add-keywords nil `((,floaty-edit-open-directive-regexp 0 'floaty-edit-directive-face prepend)))
+        (font-lock-add-keywords nil `((,floaty-edit-end-directive-regexp 0 'floaty-edit-directive-face prepend)))
         (font-lock-flush)
         (outline-minor-mode 1)
-        (setq-local outline-regexp floaty-edit-directive-regexp)
+        (setq-local outline-regexp floaty-edit-open-directive-regexp)
         (floaty-edit-update-frames)
         (floaty-edit-fold-all))
     (dolist (frame floaty-edit-frames)
@@ -319,7 +339,7 @@
           floaty-edit-directive-cache nil
           floaty-edit-host-buffer nil
           floaty-edit-host-frame nil)
-    (font-lock-remove-keywords nil `((,floaty-edit-directive-regexp 0 'floaty-edit-directive-face)))
+    (font-lock-remove-keywords nil `((,floaty-edit-open-directive-regexp 0 'floaty-edit-directive-face)))
     (font-lock-flush)
     (outline-minor-mode -1)))
 
